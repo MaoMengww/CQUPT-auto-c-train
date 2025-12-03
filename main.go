@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"main/ai"
+	"main/workerPool"
 	"os"
 	"strconv"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/chromedp/chromedp"
 )
+
 var mu sync.Mutex
 var scanner = bufio.NewScanner(os.Stdin)
 var score int
@@ -38,14 +40,44 @@ func main() {
 	numStr := scanner.Text()
 	num, err := strconv.Atoi(numStr)
 	wg.Add(num)
-	for i := range num {
-		go GetScore(choi, username, password ,i , &score)
+	// 协程池工作
+	fmt.Println("输入并发量（不输入则默认为12）")
+	scanner.Scan()
+	workCount := scanner.Text()
+	workNum, err := strconv.Atoi(workCount)
+	if workNum == 0 {
+		workNum = 12
 	}
+	fmt.Println("--------------------------")
+	pool := workerPool.NewWorkerPool(workNum, num+1)
+	defer pool.Close()
+	fmt.Printf("开始提交%v个任务\n", num)
+	//协程池分发任务
+	for i := range num {
+		taskID := i
+		taskFunc := StartWork(choi, username, password, i, &score)
+
+		err := pool.Produce(taskFunc)
+		if err != nil {
+			log.Printf("提交任务 %v 失败：%v", taskID, err)
+		}
+		fmt.Println("已提交任务 ", taskID+1)
+	}
+	fmt.Println("--------------------------")
 	wg.Wait()
 	fmt.Println("最终得分为", score, "分")
 }
 
+// StartWork 封装即将执行的任务
+func StartWork(choi, username, password string, i int, score *int) workerPool.TaskFunc {
+	return func() {
+		GetScore(choi, username, password, i, score)
+	}
+}
+
 func GetScore(choi, username, password string, i int, score *int) {
+	taskID := i + 1
+	fmt.Printf("  --任务%v：开始执行 \n", taskID)
 	var scoreStr string
 	//创建chrome实例
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
@@ -83,19 +115,19 @@ func GetScore(choi, username, password string, i int, score *int) {
 		chromedp.Click(`div#group button`, chromedp.ByQuery),
 	)
 	if err != nil {
-		log.Printf("登录失败,error: %v(%v)", err, i)
+		log.Printf("任务%v：登录失败,error: %v", taskID, err)
 	}
-	fmt.Printf("登陆成功(%v)\n", i)
+	fmt.Printf("任务%v：登陆成功\n", taskID)
 	//验证是否刷完
 	checkCtx, checkCancel := context.WithTimeout(ctx, 1*time.Second)
 	defer checkCancel()
-	fmt.Printf("正在检查是否已刷完...(%v)\n", i)
+	fmt.Printf("任务%v：正在检查完成情况...\n", taskID)
 	err = chromedp.Run(checkCtx,
 		chromedp.WaitVisible(`//div[contains(text(), "你已经完成了")]`, chromedp.BySearch),
 	)
 	if err == nil {
-		log.Printf("你已经完成该标签下的所有题目(%v)\n", i)
-		log.Printf("程序退出(%v)\n", i)
+		log.Printf("任务%v：你已经完成该标签下的所有题目\n", taskID)
+		log.Printf("任务%v：程序退出\n", taskID)
 		time.Sleep(20 * time.Second)
 		wg.Done()
 		return
@@ -107,14 +139,14 @@ func GetScore(choi, username, password string, i int, score *int) {
 			chromedp.Text(`.q-content`, &question, chromedp.ByQuery),
 		)
 		if err != nil {
-			log.Printf("获取题目失败(%v)\n", i)
+			log.Printf("任务%v：获取题目失败\n", taskID)
 			wg.Done()
 			return
 		}
-		fmt.Printf("解题中...(%v)\n", i)
+		fmt.Printf("  --任务%v：解题中...\n", taskID)
 		answer, err := ai.Answer(question)
 		if err != nil {
-			log.Printf("答案生成失败:err: %v(%v)\n", err, i)
+			log.Printf("任务%v：答案生成失败:err: %v\n", taskID, err)
 			wg.Done()
 			return
 		}
@@ -132,12 +164,12 @@ func GetScore(choi, username, password string, i int, score *int) {
 			chromedp.Text(`tr[role="row"] td.mat-column-score`, &scoreStr),
 		)
 		if err != nil {
-			log.Printf("填充代码或提交失败: %v(%v)\n", err, i)
+			log.Printf("任务%v：填充代码或提交失败: %v\n", taskID, err)
 			wg.Done()
 			return
 		}
 
-		fmt.Printf("已解答,得分为%v分(%v)\n", scoreStr, i)
+		fmt.Printf("  --任务%v：已解答,得分为%v分\n", taskID, scoreStr)
 		scoreInt, _ := strconv.Atoi(scoreStr)
 		mu.Lock()
 		*score += scoreInt
@@ -145,9 +177,10 @@ func GetScore(choi, username, password string, i int, score *int) {
 
 	} else {
 		//出错
-		log.Printf("检测过程发生未知错误: %v(%v)\n", err, i)
+		log.Printf("任务%v：检测过程发生未知错误: %v\n", taskID, err)
 		wg.Done()
 		return
 	}
+	fmt.Println("已完成任务 ", taskID)
 	wg.Done()
 }
