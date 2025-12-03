@@ -20,7 +20,7 @@ var (
 	mu      sync.Mutex
 	scanner = bufio.NewScanner(os.Stdin)
 	score   int
-	failed  int
+	win     int
 	wg      sync.WaitGroup
 )
 
@@ -44,7 +44,7 @@ func main() {
 	num, err := strconv.Atoi(numStr)
 	wg.Add(num)
 	// 协程池工作
-	fmt.Println("输入并发量(同一时间最大刷题数字,不输入则默认为12)")
+	fmt.Println("输入并发量(同一时间最大刷题数量,不输入则默认为12)")
 	scanner.Scan()
 	workCount := scanner.Text()
 	workNum, err := strconv.Atoi(workCount)
@@ -68,28 +68,29 @@ func main() {
 	}
 	fmt.Println("--------------------------")
 	wg.Wait()
-	fmt.Println("最终得分为", score, "分,得0分得题目数量为", failed, "个")
+	fmt.Println("最终得分为", score, "分,成功答题", win, "个")
 }
 
 // StartWork 封装即将执行的任务
 func StartWork(choi, username, password string, i int, score *int) workerPool.TaskFunc {
 	return func() {
-		GetScore(choi, username, password, i, score, &failed)
+		GetScore(choi, username, password, i, score, &win)
 	}
 }
 
-func GetScore(choi, username, password string, i int, score *int, failed *int) {
+func GetScore(choi, username, password string, i int, score *int, win *int) {
+	defer wg.Done()
 	taskID := i + 1
 	fmt.Printf("  --任务%v：开始执行 \n", taskID)
 	var scoreStr string
 	//创建chrome实例
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", false),
+		chromedp.Flag("headless", true),
 		chromedp.ExecPath(`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`),
 	)
-	alloctx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	defer cancel()
-	ctx, cancel := chromedp.NewContext(alloctx)
+	alloctx, _ := chromedp.NewExecAllocator(context.Background(), opts...)
+	ctx1, _ := chromedp.NewContext(alloctx)
+	ctx, cancel := context.WithTimeout(ctx1, 2*time.Minute)
 	defer cancel()
 
 	//要刷的章节
@@ -117,7 +118,8 @@ func GetScore(choi, username, password string, i int, score *int, failed *int) {
 		chromedp.Click(`div#group button`, chromedp.ByQuery),
 	)
 	if err != nil {
-		log.Printf("任务%v：登录失败,error: %v", taskID, err)
+		log.Printf("任务%v：登录或导航失败/超时: %v\n", taskID, err)
+		return
 	}
 	fmt.Printf("任务%v：登陆成功\n", taskID)
 	//验证是否刷完
@@ -131,7 +133,7 @@ func GetScore(choi, username, password string, i int, score *int, failed *int) {
 		log.Printf("任务%v：你已经完成该标签下的所有题目\n", taskID)
 		log.Printf("任务%v：程序退出\n", taskID)
 		time.Sleep(20 * time.Second)
-		wg.Done()
+
 		return
 	}
 	if err == context.DeadlineExceeded {
@@ -142,14 +144,12 @@ func GetScore(choi, username, password string, i int, score *int, failed *int) {
 		)
 		if err != nil {
 			log.Printf("任务%v：获取题目失败\n", taskID)
-			wg.Done()
 			return
 		}
 		fmt.Printf("  --任务%v：解题中...\n", taskID)
 		answer, err := ai.Answer(question)
 		if err != nil {
 			log.Printf("任务%v：答案生成失败:err: %v\n", taskID, err)
-			wg.Done()
 			return
 		}
 		codeBytes, _ := json.Marshal(answer)
@@ -171,28 +171,27 @@ func GetScore(choi, username, password string, i int, score *int, failed *int) {
 		)
 		if err != nil {
 			log.Printf("任务%v：填充代码或提交失败: %v\n", taskID, err)
-			wg.Done()
 			return
 		}
 
 		//计算单个任务得分
 		fmt.Printf("  --任务%v：已解答,得分为%v分\n", taskID, scoreStr)
 		scoreInt, _ := strconv.Atoi(scoreStr)
+		if scoreInt == 0 {
+			fmt.Println("已完成任务 ", taskID)
+			return
+		}
 		mu.Lock()
 		*score += scoreInt
 		mu.Unlock()
-		if scoreInt == 0 {
-			mu.Lock()
-			*failed += 1
-			mu.Unlock()
-		}
-
 	} else {
 		//出错
 		log.Printf("任务%v：检测过程发生未知错误: %v\n", taskID, err)
-		wg.Done()
+
 		return
 	}
 	fmt.Println("已完成任务 ", taskID)
-	wg.Done()
+	mu.Lock()
+	*win++
+	mu.Unlock()
 }
