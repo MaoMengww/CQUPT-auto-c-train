@@ -16,10 +16,13 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-var mu sync.Mutex
-var scanner = bufio.NewScanner(os.Stdin)
-var score int
-var wg sync.WaitGroup
+var (
+	mu      sync.Mutex
+	scanner = bufio.NewScanner(os.Stdin)
+	score   int
+	failed  int
+	wg      sync.WaitGroup
+)
 
 func main() {
 	err := ai.InitAI()
@@ -41,7 +44,7 @@ func main() {
 	num, err := strconv.Atoi(numStr)
 	wg.Add(num)
 	// 协程池工作
-	fmt.Println("输入并发量（不输入则默认为12）")
+	fmt.Println("输入并发量(同一时间最大刷题数字,不输入则默认为12)")
 	scanner.Scan()
 	workCount := scanner.Text()
 	workNum, err := strconv.Atoi(workCount)
@@ -65,17 +68,17 @@ func main() {
 	}
 	fmt.Println("--------------------------")
 	wg.Wait()
-	fmt.Println("最终得分为", score, "分")
+	fmt.Println("最终得分为", score, "分,得0分得题目数量为", failed, "个")
 }
 
 // StartWork 封装即将执行的任务
 func StartWork(choi, username, password string, i int, score *int) workerPool.TaskFunc {
 	return func() {
-		GetScore(choi, username, password, i, score)
+		GetScore(choi, username, password, i, score, &failed)
 	}
 }
 
-func GetScore(choi, username, password string, i int, score *int) {
+func GetScore(choi, username, password string, i int, score *int, failed *int) {
 	taskID := i + 1
 	fmt.Printf("  --任务%v：开始执行 \n", taskID)
 	var scoreStr string
@@ -87,7 +90,6 @@ func GetScore(choi, username, password string, i int, score *int) {
 	alloctx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer cancel()
 	ctx, cancel := chromedp.NewContext(alloctx)
-	defer cancel()
 	defer cancel()
 
 	//要刷的章节
@@ -154,12 +156,16 @@ func GetScore(choi, username, password string, i int, score *int) {
 		fillCodeJS := fmt.Sprintf(`monaco.editor.getEditors()[0].setValue(%s)`, string(codeBytes))
 
 		err = chromedp.Run(ctx,
+			//填充答案
 			chromedp.WaitVisible(`.monaco-editor`, chromedp.ByQuery),
 			chromedp.Evaluate(fillCodeJS, nil),
+			//点击提交
 			chromedp.WaitVisible(`//button[contains(., "提交")]`, chromedp.BySearch),
 			chromedp.Click(`//button[contains(., "提交")]`, chromedp.BySearch),
+			//点击确认
 			chromedp.WaitVisible(`//button[contains(., "确定")]`, chromedp.BySearch),
 			chromedp.Click(`//button[contains(., "确定")]`, chromedp.BySearch),
+			//获取得分
 			chromedp.WaitVisible(`tr[role="row"] td.mat-column-score`),
 			chromedp.Text(`tr[role="row"] td.mat-column-score`, &scoreStr),
 		)
@@ -169,11 +175,17 @@ func GetScore(choi, username, password string, i int, score *int) {
 			return
 		}
 
+		//计算单个任务得分
 		fmt.Printf("  --任务%v：已解答,得分为%v分\n", taskID, scoreStr)
 		scoreInt, _ := strconv.Atoi(scoreStr)
 		mu.Lock()
 		*score += scoreInt
 		mu.Unlock()
+		if scoreInt == 0 {
+			mu.Lock()
+			*failed += 1
+			mu.Unlock()
+		}
 
 	} else {
 		//出错
