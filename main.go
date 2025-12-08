@@ -10,6 +10,7 @@ import (
 	"main/workerPool"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,7 +26,22 @@ var (
 )
 
 func main() {
-	err := ai.InitAI()
+	defer bufio.NewReader(os.Stdin).ReadBytes('\n') // system("pause");
+	fmt.Println("============================================================================================")
+	fmt.Println("  CQUPT-C语言自动刷题系统")
+	fmt.Println("  原作者：MaoMeng")
+	fmt.Println("  原作者Github网址：https://github.com/MaoMengww")
+	fmt.Println("  原项目地址：https://github.com/MaoMengww/CQUPT-auto-c-train")
+	fmt.Println("")
+	fmt.Println("  未经许可，严禁复制、修改、分发或用于商业用途")
+	fmt.Println("  此脚本仅用于代码学习和研究使用，不得用于违规违纪行为，作者不对软件使用后果承担任何责任")
+	fmt.Println()
+	fmt.Println("====================================CQUPT-C语言刷题脚本=====================================")
+	err := InitEnv(false)
+	if err != nil {
+		log.Fatalf("InitEnv err: %v", err)
+	}
+	err = ai.InitAI()
 	if err != nil {
 		log.Fatalf("ai初始化失败")
 	}
@@ -69,6 +85,7 @@ func main() {
 	fmt.Println("--------------------------")
 	wg.Wait()
 	fmt.Println("最终得分为", score, "分,成功答题", win, "个")
+	fmt.Println("请按回车键退出...")
 }
 
 // StartWork 封装即将执行的任务
@@ -194,4 +211,102 @@ func GetScore(choi, username, password string, i int, score *int, win *int) {
 	mu.Lock()
 	*win++
 	mu.Unlock()
+}
+
+func InitEnv(Rewrite bool) error {
+	envFile := ".env"
+
+	// 检查 .env 文件是否存在
+	if _, err := os.Stat(envFile); os.IsNotExist(err) || !isEnvFileValid(envFile) || Rewrite {
+		if !Rewrite {
+			fmt.Println("检测到缺少环境配置文件或环境配置文件已损坏，正在启动环境配置程序...")
+		}
+
+		reader := bufio.NewReader(os.Stdin)
+
+		// 获取 ARK_API_KEY
+		var apiKey string
+		for {
+			fmt.Print("请输入大模型 API 密钥: ")
+			input, _ := reader.ReadString('\n')
+			apiKey = strings.TrimSpace(input)
+
+			if apiKey == "" {
+				fmt.Println("API 密钥不能为空")
+				continue
+			}
+
+			// 验证格式
+			if len(apiKey) < 8 {
+				fmt.Println("密钥格式可能不正确")
+				fmt.Print("是否继续? (y/n): ")
+				confirm, _ := reader.ReadString('\n')
+				if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
+					continue
+				}
+			}
+			break
+		}
+
+		// 获取 ARK_MODEL_ID
+		var modelID string
+		for {
+			fmt.Print("请输入模型ID: ")
+			input, _ := reader.ReadString('\n')
+			modelID = strings.TrimSpace(input)
+
+			if modelID == "" {
+				fmt.Println("模型ID不能为空!")
+				continue
+			}
+			break
+		}
+
+		// 创建配置文件
+		content := fmt.Sprintf("ARK_API_KEY:%s\nARK_MODEL_ID:%s\n", apiKey, modelID)
+
+		err := os.WriteFile(envFile, []byte(content), 0644)
+		if err != nil {
+			fmt.Printf("创建配置文件失败: %v\n", err)
+			return err
+		}
+
+		fmt.Printf("\n配置文件已生成: %s\n", envFile)
+		fmt.Println("您可以随时编辑此文件修改配置")
+
+	} else {
+		fmt.Println("环境配置文件检测正常")
+		fmt.Println("是否重写环境配置信息？(y/n)")
+		reader := bufio.NewReader(os.Stdin)
+		confirm, _ := reader.ReadString('\n')
+		if strings.ToLower(strings.TrimSpace(confirm)) != "n" {
+			err := InitEnv(true)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func isEnvFileValid(filename string) bool {
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		return false
+	}
+
+	lines := strings.Split(string(content), "\n")
+	hasAPIKey := false
+	hasModelID := false
+
+	for _, line := range lines {
+		if strings.Contains(line, "ARK_API_KEY") && len(line) > len("ARK_API_KEY:")+5 {
+			hasAPIKey = true
+		}
+		if strings.Contains(line, "ARK_MODEL_ID") && len(line) > len("ARK_MODEL_ID:")+1 {
+			hasModelID = true
+		}
+	}
+
+	return hasAPIKey && hasModelID
 }
